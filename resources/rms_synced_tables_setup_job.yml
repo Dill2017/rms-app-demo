@@ -1,0 +1,25 @@
+resources:
+  jobs:
+    rms_synced_tables_setup_job:
+      name: "[${bundle.target}] RMS Synced Tables Setup"
+
+      tasks:
+        - task_key: setup_synced_tables
+          notebook_task:
+            notebook_path: ../src/pipelines/rms_setup/setup_synced_tables.py
+            base_parameters:
+              uc_catalog: ${var.forecast_catalog}
+              uc_schema: ${var.forecast_schema}
+              lakebase_instance_name: ${var.lakebase_instance_name}
+              lakebase_catalog: ${var.lakebase_catalog}
+            source: WORKSPACE
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            num_workers: 0
+            node_type_id: "Standard_D4ds_v5"
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: "local[*]"
+            custom_tags:
+              ResourceClass: SingleNode

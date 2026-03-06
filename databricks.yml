@@ -1,0 +1,59 @@
+bundle:
+  name: "rms-app-ds"
+
+include:
+  - resources/*.yml
+
+sync:
+  include:
+    - .build
+
+artifacts:
+  default:
+    build: apx build
+
+variables:
+  lakebase_instance_name:
+    default: "rms-app-ds"
+  forecast_catalog:
+    default: "rms_hotel_demo"
+  forecast_schema:
+    default: "hotel_rms"
+  lakebase_catalog:
+    default: "rms_app_ds_lakebase"
+
+resources:
+  apps:
+    rms-app-ds-app:
+      name: "rms-app-ds"
+      description: "Hotel Revenue Management System"
+      source_code_path: ./.build
+      user_api_scopes:
+        - sql
+      resources:
+        - name: "db"
+          database:
+            database_name: "databricks_postgres"
+            instance_name: ${var.lakebase_instance_name}
+            permission: "CAN_CONNECT_AND_CREATE"
+
+targets:
+  dev:
+    mode: development
+    workspace:
+      profile: adb-984752964297111
+    resources:
+      database_instances:
+        rms-app-ds-db:
+          name: ${var.lakebase_instance_name}
+          capacity: "CU_1"
+  prod:
+    default: true
+    workspace:
+      host: https://adb-984752964297111.11.azuredatabricks.net
+      profile: adb-984752964297111
+    resources:
+      database_instances:
+        rms-app-ds-db:
+          name: ${var.lakebase_instance_name}
+          capacity: "CU_1"

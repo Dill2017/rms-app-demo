@@ -1,0 +1,23 @@
+resources:
+  jobs:
+    rms_data_generation_job:
+      name: "[${bundle.target}] RMS Data Generation"
+
+      tasks:
+        - task_key: generate_all_data
+          notebook_task:
+            notebook_path: ../src/pipelines/rms_data_generation/generate_all_data.py
+            base_parameters:
+              catalog: ${var.forecast_catalog}
+              schema: ${var.forecast_schema}
+            source: WORKSPACE
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            num_workers: 2
+            node_type_id: "Standard_D4ds_v5"
+            data_security_mode: SINGLE_USER
+
+      schedule:
+        quartz_cron_expression: "0 0 5 * * ?"
+        timezone_id: "UTC"
+        pause_status: PAUSED
