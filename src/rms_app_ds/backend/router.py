@@ -114,6 +114,179 @@ def _get_web_traffic(session, hotel_id: str, target_date: date) -> dict:
     return {"searches": 0, "page_views": 0, "booking_attempts": 0, "bookings_completed": 0, "conversion_rate": 0.0}
 
 
+# ── Bulk-loading helpers ──
+
+_DEFAULT_OCC = 0.65
+_DEFAULT_DEMAND = 50.0
+
+
+def _bulk_occupancy(
+    session, hotel_ids: list[str], start_date: date, end_date: date,
+) -> dict[tuple[str, str, date], float]:
+    """Bulk-load occupancy fractions (0-1). Key: (hotel_id, room_type, date)."""
+    if not hotel_ids:
+        return {}
+    rows = session.exec(
+        select(OccupancyActual).where(
+            OccupancyActual.hotel_id.in_(hotel_ids),  # type: ignore[union-attr]
+            OccupancyActual.date >= start_date,
+            OccupancyActual.date <= end_date,
+        )
+    ).all()
+    return {(r.hotel_id, r.room_type, r.date): float(r.occupancy_pct) / 100.0 for r in rows}
+
+
+def _bulk_avg_occupancy(
+    session, hotel_ids: list[str], target_date: date,
+) -> dict[str, float]:
+    """Bulk-load average occupancy (0-1) per hotel on a single date. Key: hotel_id."""
+    if not hotel_ids:
+        return {}
+    rows = session.exec(
+        select(
+            OccupancyActual.hotel_id,
+            func.avg(OccupancyActual.occupancy_pct),
+        )
+        .where(
+            OccupancyActual.hotel_id.in_(hotel_ids),  # type: ignore[union-attr]
+            OccupancyActual.date == target_date,
+        )
+        .group_by(OccupancyActual.hotel_id)
+    ).all()
+    return {row[0]: float(row[1]) / 100.0 for row in rows}
+
+
+def _bulk_prices(
+    session, hotel_ids: list[str], start_date: date, end_date: date,
+) -> dict[tuple[str, str, date], float]:
+    """Bulk-load room prices. Key: (hotel_id, room_type_name, date)."""
+    if not hotel_ids:
+        return {}
+    rows = session.exec(
+        select(RoomPrice).where(
+            RoomPrice.hotel_id.in_(hotel_ids),  # type: ignore[union-attr]
+            RoomPrice.date >= start_date,
+            RoomPrice.date <= end_date,
+        )
+    ).all()
+    return {(r.hotel_id, r.room_type_name, r.date): r.price for r in rows}
+
+
+def _bulk_room_types(
+    session, hotel_ids: list[str],
+) -> dict[str, list[RoomType]]:
+    """Bulk-load room types grouped by hotel. Key: hotel_id."""
+    if not hotel_ids:
+        return {}
+    rows = session.exec(
+        select(RoomType).where(RoomType.hotel_id.in_(hotel_ids))  # type: ignore[union-attr]
+    ).all()
+    result: dict[str, list[RoomType]] = defaultdict(list)
+    for r in rows:
+        result[r.hotel_id].append(r)
+    return result
+
+
+def _bulk_demand_scores(
+    session, hotel_ids: list[str], start_date: date, end_date: date,
+) -> dict[tuple[str, date], float]:
+    """Bulk-load demand scores. Key: (hotel_id, forecast_date)."""
+    if not hotel_ids:
+        return {}
+    rows = session.exec(
+        select(  # ty: ignore[no-matching-overload]
+            DemandForecast.hotel_id,
+            DemandForecast.forecast_date,
+            DemandForecast.demand_score,
+        ).where(
+            DemandForecast.hotel_id.in_(hotel_ids),  # type: ignore[union-attr]
+            DemandForecast.forecast_date >= start_date,
+            DemandForecast.forecast_date <= end_date,
+        )
+    ).all()
+    return {(row[0], row[1]): float(row[2]) for row in rows}
+
+
+def _bulk_demand_forecasts(
+    session, hotel_ids: list[str], start_date: date, end_date: date,
+) -> dict[tuple[str, date], DemandForecast]:
+    """Bulk-load full DemandForecast objects. Key: (hotel_id, forecast_date)."""
+    if not hotel_ids:
+        return {}
+    rows = session.exec(
+        select(DemandForecast).where(
+            DemandForecast.hotel_id.in_(hotel_ids),  # type: ignore[union-attr]
+            DemandForecast.forecast_date >= start_date,
+            DemandForecast.forecast_date <= end_date,
+        )
+    ).all()
+    return {(r.hotel_id, r.forecast_date): r for r in rows}
+
+
+def _bulk_occupancy_forecasts(
+    session, hotel_ids: list[str], start_date: date, end_date: date,
+) -> dict[tuple[str, str, date], OccupancyForecast]:
+    """Bulk-load OccupancyForecast objects. Key: (hotel_id, room_type, forecast_date)."""
+    if not hotel_ids:
+        return {}
+    rows = session.exec(
+        select(OccupancyForecast).where(
+            OccupancyForecast.hotel_id.in_(hotel_ids),  # type: ignore[union-attr]
+            OccupancyForecast.forecast_date >= start_date,
+            OccupancyForecast.forecast_date <= end_date,
+        )
+    ).all()
+    return {(r.hotel_id, r.room_type, r.forecast_date): r for r in rows}
+
+
+def _bulk_competitor_avg(
+    session, hotel_ids: list[str], start_date: date, end_date: date,
+) -> dict[tuple[str, str, date], float]:
+    """Bulk-load average competitor prices via SQL aggregation. Key: (hotel_id, room_type, date)."""
+    if not hotel_ids:
+        return {}
+    rows = session.exec(
+        select(  # ty: ignore[no-matching-overload]
+            CompetitorPrice.hotel_id,
+            CompetitorPrice.room_type,
+            CompetitorPrice.date,
+            func.avg(CompetitorPrice.competitor_price),
+        )
+        .where(
+            CompetitorPrice.hotel_id.in_(hotel_ids),  # type: ignore[union-attr]
+            CompetitorPrice.date >= start_date,
+            CompetitorPrice.date <= end_date,
+        )
+        .group_by(CompetitorPrice.hotel_id, CompetitorPrice.room_type, CompetitorPrice.date)
+    ).all()
+    return {(row[0], row[1], row[2]): float(row[3]) for row in rows}
+
+
+def _bulk_web_traffic(
+    session, hotel_ids: list[str], start_date: date, end_date: date,
+) -> dict[tuple[str, date], dict]:
+    """Bulk-load web traffic records. Key: (hotel_id, date)."""
+    if not hotel_ids:
+        return {}
+    rows = session.exec(
+        select(WebTrafficRecord).where(
+            WebTrafficRecord.hotel_id.in_(hotel_ids),  # type: ignore[union-attr]
+            WebTrafficRecord.date >= start_date,
+            WebTrafficRecord.date <= end_date,
+        )
+    ).all()
+    result: dict[tuple[str, date], dict] = {}
+    for r in rows:
+        result[(r.hotel_id, r.date)] = {
+            "searches": r.searches,
+            "page_views": r.page_views,
+            "booking_attempts": r.booking_attempts,
+            "bookings_completed": r.bookings_completed,
+            "conversion_rate": r.conversion_rate,
+        }
+    return result
+
+
 # ── Basic routes ──
 
 
@@ -196,14 +369,19 @@ def list_hotels(
     stmt = stmt.order_by(Hotel.id).offset((page - 1) * page_size).limit(page_size)
     hotels = session.exec(stmt).all()
 
+    hotel_ids = [h.id for h in hotels]
+    avg_occ_map = _bulk_avg_occupancy(session, hotel_ids, today)
+    adr_rows = session.exec(
+        select(RoomPrice.hotel_id, func.avg(RoomPrice.price))
+        .where(RoomPrice.hotel_id.in_(hotel_ids), RoomPrice.date == today)  # type: ignore[union-attr]
+        .group_by(RoomPrice.hotel_id)
+    ).all()
+    adr_map: dict[str, float] = {row[0]: float(row[1]) for row in adr_rows}
+
     summaries: list[HotelSummary] = []
     for h in hotels:
-        occ = _get_avg_occupancy(session, h.id, today)
-        price_stmt = select(func.avg(RoomPrice.price)).where(
-            RoomPrice.hotel_id == h.id, RoomPrice.date == today
-        )
-        adr_val = session.exec(price_stmt).one()
-        adr = float(adr_val) if adr_val else 0.0
+        occ = avg_occ_map.get(h.id, _DEFAULT_OCC)
+        adr = adr_map.get(h.id, 0.0)
         summaries.append(HotelSummary(
             hotel_id=h.id, name=h.name, city=h.city, country=h.country,
             region=h.region, star_rating=h.star_rating, total_rooms=h.total_rooms,
@@ -231,21 +409,18 @@ def get_hotel(hotel_id: str, session: Dependencies.Session):
         for rt in room_types_db
     ]
 
+    start_30d = today - timedelta(days=29)
+    occ_map = _bulk_occupancy(session, [hotel_id], start_30d, today)
+    price_map = _bulk_prices(session, [hotel_id], start_30d, today)
+
     total_revenue = 0.0
     total_occ = 0.0
     occ_count = 0
     for rt in room_types_db:
         for d in range(30):
             target = today - timedelta(days=d)
-            occ = _get_occupancy(session, hotel_id, rt.name, target)
-            price_row = session.exec(
-                select(RoomPrice.price).where(
-                    RoomPrice.hotel_id == hotel_id,
-                    RoomPrice.room_type_name == rt.name,
-                    RoomPrice.date == target,
-                )
-            ).first()
-            price = float(price_row) if price_row else rt.base_price
+            occ = occ_map.get((hotel_id, rt.name, target), _DEFAULT_OCC)
+            price = price_map.get((hotel_id, rt.name, target), rt.base_price)
             total_revenue += price * rt.room_count * occ
             total_occ += occ
             occ_count += 1
@@ -328,11 +503,15 @@ def get_hotel_pricing(
     for ofc in ofc_rows:
         occ_fc_map[(ofc.forecast_date, ofc.room_type)] = ofc
 
+    occ_map = _bulk_occupancy(session, [hotel_id], sd, ed)
+    demand_map = _bulk_demand_scores(session, [hotel_id], sd, ed)
+    comp_map = _bulk_competitor_avg(session, [hotel_id], sd, ed)
+
     rows: list[RoomPricingRow] = []
     for pr in price_rows:
-        occ = _get_occupancy(session, hotel_id, pr.room_type_name, pr.date)
-        demand = _get_demand_score(session, hotel_id, pr.date)
-        comp_avg = _get_competitor_avg(session, hotel_id, pr.room_type_name, pr.date)
+        occ = occ_map.get((hotel_id, pr.room_type_name, pr.date), _DEFAULT_OCC)
+        demand = demand_map.get((hotel_id, pr.date), _DEFAULT_DEMAND)
+        comp_avg = comp_map.get((hotel_id, pr.room_type_name, pr.date), 0.0)
 
         dfc = demand_fc_map.get(pr.date)
         ofc = occ_fc_map.get((pr.date, pr.room_type_name))
@@ -957,8 +1136,9 @@ def get_hotel_web_traffic(
 @router.get("/dashboard/kpis", response_model=DashboardKPIs, operation_id="getDashboardKpis")
 def get_dashboard_kpis(session: Dependencies.Session, region: str = ""):
     today = date.today()
+    month_start = today.replace(day=1)
     days_into_month = today.day
-    prev_month_end = today.replace(day=1) - timedelta(days=1)
+    prev_month_end = month_start - timedelta(days=1)
     prev_period_start = prev_month_end.replace(day=1)
     prev_period_end = prev_period_start + timedelta(days=min(days_into_month, prev_month_end.day) - 1)
 
@@ -974,6 +1154,12 @@ def get_dashboard_kpis(session: Dependencies.Session, region: str = ""):
     total_count: int = session.exec(count_stmt).one()
     scale = float(total_count) / max(1, len(sample_hotels))
 
+    hotel_ids = [h.id for h in sample_hotels]
+    rt_cache = _bulk_room_types(session, hotel_ids)
+    occ_map = _bulk_occupancy(session, hotel_ids, prev_period_start, today)
+    price_map = _bulk_prices(session, hotel_ids, month_start, today)
+    wt_map = _bulk_web_traffic(session, hotel_ids[:1], today - timedelta(days=6), today)
+
     total_rev = 0.0
     prev_rev = 0.0
     total_occ = 0.0
@@ -983,21 +1169,11 @@ def get_dashboard_kpis(session: Dependencies.Session, region: str = ""):
     prev_occ_count = 0
 
     for h in sample_hotels:
-        room_types_db = session.exec(
-            select(RoomType).where(RoomType.hotel_id == h.id)
-        ).all()
-        for rt in room_types_db:
-            current = today.replace(day=1)
+        for rt in rt_cache.get(h.id, []):
+            current = month_start
             while current <= today:
-                occ = _get_occupancy(session, h.id, rt.name, current)
-                pr = session.exec(
-                    select(RoomPrice.price).where(
-                        RoomPrice.hotel_id == h.id,
-                        RoomPrice.room_type_name == rt.name,
-                        RoomPrice.date == current,
-                    )
-                ).first()
-                price = float(pr) if pr else rt.base_price
+                occ = occ_map.get((h.id, rt.name, current), _DEFAULT_OCC)
+                price = price_map.get((h.id, rt.name, current), rt.base_price)
                 total_rev += price * rt.room_count * occ
                 total_occ += occ
                 occ_count += 1
@@ -1006,7 +1182,7 @@ def get_dashboard_kpis(session: Dependencies.Session, region: str = ""):
 
             prev_cur = prev_period_start
             while prev_cur <= prev_period_end:
-                occ = _get_occupancy(session, h.id, rt.name, prev_cur)
+                occ = occ_map.get((h.id, rt.name, prev_cur), _DEFAULT_OCC)
                 prev_rev += rt.base_price * rt.room_count * occ
                 prev_occ += occ
                 prev_occ_count += 1
@@ -1030,8 +1206,8 @@ def get_dashboard_kpis(session: Dependencies.Session, region: str = ""):
     if first_hotel:
         conv_total = 0.0
         for d in range(7):
-            wt = _get_web_traffic(session, first_hotel.id, today - timedelta(days=d))
-            conv_total += wt["conversion_rate"]
+            wt = wt_map.get((first_hotel.id, today - timedelta(days=d)), {})
+            conv_total += wt.get("conversion_rate", 0.0)
         avg_conv = conv_total / 7
 
     rev_change = round((total_rev - prev_rev) / max(1, prev_rev) * 100, 1) if prev_rev else 0.0
@@ -1052,6 +1228,8 @@ def get_dashboard_kpis(session: Dependencies.Session, region: str = ""):
 )
 def get_revenue_trend(session: Dependencies.Session, days: int = 30, region: str = ""):
     today = date.today()
+    start = today - timedelta(days=days - 1)
+
     hotel_stmt = select(Hotel).order_by(Hotel.id)
     if region:
         hotel_stmt = hotel_stmt.where(Hotel.region == region)
@@ -1064,10 +1242,10 @@ def get_revenue_trend(session: Dependencies.Session, days: int = 30, region: str
     total_hotels: int = session.exec(count_stmt).one()
     scale = float(total_hotels) / max(1, len(sample))
 
-    rt_cache: dict[str, list[RoomType]] = {}
-    for h in sample:
-        rts = session.exec(select(RoomType).where(RoomType.hotel_id == h.id)).all()
-        rt_cache[h.id] = list(rts)
+    hotel_ids = [h.id for h in sample]
+    rt_cache = _bulk_room_types(session, hotel_ids)
+    occ_map = _bulk_occupancy(session, hotel_ids, start, today)
+    price_map = _bulk_prices(session, hotel_ids, start, today)
 
     points: list[RevenueTrendPoint] = []
     for d in range(days - 1, -1, -1):
@@ -1075,16 +1253,9 @@ def get_revenue_trend(session: Dependencies.Session, days: int = 30, region: str
         day_rev = 0.0
         day_rooms = 0
         for h in sample:
-            for rt in rt_cache[h.id]:
-                occ = _get_occupancy(session, h.id, rt.name, target)
-                pr = session.exec(
-                    select(RoomPrice.price).where(
-                        RoomPrice.hotel_id == h.id,
-                        RoomPrice.room_type_name == rt.name,
-                        RoomPrice.date == target,
-                    )
-                ).first()
-                price = float(pr) if pr else rt.base_price
+            for rt in rt_cache.get(h.id, []):
+                occ = occ_map.get((h.id, rt.name, target), _DEFAULT_OCC)
+                price = price_map.get((h.id, rt.name, target), rt.base_price)
                 day_rev += price * rt.room_count * occ
                 day_rooms += int(rt.room_count * occ)
 
@@ -1105,6 +1276,9 @@ def get_occupancy_by_region(session: Dependencies.Session):
     today = date.today()
     hotels = session.exec(select(Hotel)).all()
 
+    hotel_ids = [h.id for h in hotels]
+    occ_map = _bulk_occupancy(session, hotel_ids, today, today)
+
     region_occ: dict[str, float] = defaultdict(float)
     region_count: dict[str, int] = defaultdict(int)
     region_hotels: dict[str, int] = defaultdict(int)
@@ -1114,7 +1288,7 @@ def get_occupancy_by_region(session: Dependencies.Session):
         r = h.region
         region_hotels[r] += 1
         region_rooms[r] += h.total_rooms
-        occ = _get_occupancy(session, h.id, "Standard", today)
+        occ = occ_map.get((h.id, "Standard", today), _DEFAULT_OCC)
         region_occ[r] += occ
         region_count[r] += 1
 
@@ -1147,11 +1321,18 @@ def get_opportunities(
         hotel_stmt = hotel_stmt.where(Hotel.region == region)
     hotels = session.exec(hotel_stmt).all()
 
+    hotel_ids = [h.id for h in hotels]
+    rt_cache = _bulk_room_types(session, hotel_ids)
+    price_map = _bulk_prices(session, hotel_ids, today, today)
+    occ_map = _bulk_occupancy(session, hotel_ids, today, today)
+    demand_map = _bulk_demand_scores(session, hotel_ids, today, today)
+    comp_map = _bulk_competitor_avg(session, hotel_ids, today, today)
+    dfc_map = _bulk_demand_forecasts(session, hotel_ids, today, today)
+    ofc_map = _bulk_occupancy_forecasts(session, hotel_ids, today, today)
+
     opportunities: list[OpportunityRow] = []
     for h in hotels:
-        room_types_db = session.exec(
-            select(RoomType).where(RoomType.hotel_id == h.id)
-        ).all()
+        room_types_db = rt_cache.get(h.id, [])
         if not room_types_db:
             continue
 
@@ -1167,32 +1348,12 @@ def get_opportunities(
         best_rt_uplift = 0.0
 
         for rt in room_types_db:
-            price_row = session.exec(
-                select(RoomPrice).where(
-                    RoomPrice.hotel_id == h.id,
-                    RoomPrice.room_type_name == rt.name,
-                    RoomPrice.date == today,
-                )
-            ).first()
-            current_price = price_row.price if price_row else rt.base_price
-
-            occ = _get_occupancy(session, h.id, rt.name, today)
-            demand = _get_demand_score(session, h.id, today)
-            comp_avg = _get_competitor_avg(session, h.id, rt.name, today)
-
-            dfc = session.exec(
-                select(DemandForecast).where(
-                    DemandForecast.hotel_id == h.id,
-                    DemandForecast.forecast_date == today,
-                )
-            ).first()
-            ofc = session.exec(
-                select(OccupancyForecast).where(
-                    OccupancyForecast.hotel_id == h.id,
-                    OccupancyForecast.room_type == rt.name,
-                    OccupancyForecast.forecast_date == today,
-                )
-            ).first()
+            current_price = price_map.get((h.id, rt.name, today), rt.base_price)
+            occ = occ_map.get((h.id, rt.name, today), _DEFAULT_OCC)
+            demand = demand_map.get((h.id, today), _DEFAULT_DEMAND)
+            comp_avg = comp_map.get((h.id, rt.name, today), 0.0)
+            dfc = dfc_map.get((h.id, today))
+            ofc = ofc_map.get((h.id, rt.name, today))
 
             suggestion = suggest_price(
                 base_price=rt.base_price,
@@ -1286,7 +1447,8 @@ def get_pickup_curve(
         if not hotel:
             return []
         td = date.fromisoformat(target_date)
-        final_occ = _get_occupancy(session, hotel.id, "Standard", td)
+        occ_map = _bulk_occupancy(session, [hotel_id], td, td)
+        final_occ = occ_map.get((hotel_id, "Standard", td), _DEFAULT_OCC)
         points: list[PickupCurvePoint] = []
         for lt in range(max_lead, -1, -1):
             if lt <= 0:
@@ -1308,19 +1470,22 @@ def get_pickup_curve(
     tomorrow = date.today() + timedelta(days=1)
     td = date.fromisoformat(target_date) if target_date else tomorrow
 
+    hotel_ids = [h.id for h in hotels]
+    occ_map = _bulk_occupancy(session, hotel_ids, td, td)
+
     lead_sums: dict[int, float] = defaultdict(float)
-    for lt in range(max_lead, -1, -1):
-        for h in hotels:
-            final_occ = _get_occupancy(session, h.id, "Standard", td)
+    for h in hotels:
+        final_occ = occ_map.get((h.id, "Standard", td), _DEFAULT_OCC)
+        for lt in range(max_lead, -1, -1):
             if lt <= 0:
                 captured = final_occ
             else:
                 t = 1.0 - min(lt, max_lead) / max_lead
                 captured = final_occ * (0.15 + 0.85 * (t ** 1.8))
             lead_sums[lt] += captured
-        lead_sums[lt] /= len(hotels)
 
+    n = len(hotels)
     return [
-        PickupCurvePoint(lead_time_days=lt, occupancy_pct=round(lead_sums[lt] * 100, 1))
+        PickupCurvePoint(lead_time_days=lt, occupancy_pct=round(lead_sums[lt] / n * 100, 1))
         for lt in range(max_lead, -1, -1)
     ]
