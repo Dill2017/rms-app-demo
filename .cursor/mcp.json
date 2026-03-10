@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "databricks": {
+      "command": "/Users/dilshad.shawki/.ai-dev-kit/.venv/bin/python",
+      "args": ["/Users/dilshad.shawki/.ai-dev-kit/repo/databricks-mcp-server/run_server.py"],
+      "defer_loading": true,
+      "env": {"DATABRICKS_CONFIG_PROFILE": "adb-984752964297111"}
+    }
+  }
+}

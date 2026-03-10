@@ -1142,58 +1142,54 @@ def get_dashboard_kpis(session: Dependencies.Session, region: str = ""):
     prev_period_start = prev_month_end.replace(day=1)
     prev_period_end = prev_period_start + timedelta(days=min(days_into_month, prev_month_end.day) - 1)
 
-    hotel_stmt = select(Hotel).order_by(Hotel.id)
+    conn = session.connection()
+    region_clause = "AND h.region = :region" if region else ""
+    params: dict = {
+        "month_start": month_start,
+        "today": today,
+        "prev_start": prev_period_start,
+        "prev_end": prev_period_end,
+    }
     if region:
-        hotel_stmt = hotel_stmt.where(Hotel.region == region)
-    hotel_stmt = hotel_stmt.limit(80)
-    sample_hotels = session.exec(hotel_stmt).all()
+        params["region"] = region
 
-    count_stmt = select(func.count()).select_from(Hotel)
-    if region:
-        count_stmt = count_stmt.where(Hotel.region == region)
-    total_count: int = session.exec(count_stmt).one()
-    scale = float(total_count) / max(1, len(sample_hotels))
+    cur_row = conn.execute(text(f"""
+        SELECT
+            COALESCE(SUM(rp.price * rt.room_count * COALESCE(oa.occupancy_pct, 65.0) / 100.0), 0),
+            COALESCE(SUM(FLOOR(rt.room_count * COALESCE(oa.occupancy_pct, 65.0) / 100.0)), 0)
+        FROM rms_app.room_price rp
+        JOIN hotel_rms.room_type rt
+            ON rp.hotel_id = rt.hotel_id AND rp.room_type_name = rt.name
+        JOIN hotel_rms.hotel h ON rp.hotel_id = h.id
+        LEFT JOIN hotel_rms.occupancy_actuals oa
+            ON rp.hotel_id = oa.hotel_id
+            AND rp.room_type_name = oa.room_type
+            AND rp.date = oa.date
+        WHERE rp.date >= :month_start AND rp.date <= :today {region_clause}
+    """), params).one()
+    total_rev = float(cur_row[0])
+    total_bookings = int(cur_row[1])
 
-    hotel_ids = [h.id for h in sample_hotels]
-    rt_cache = _bulk_room_types(session, hotel_ids)
-    occ_map = _bulk_occupancy(session, hotel_ids, prev_period_start, today)
-    price_map = _bulk_prices(session, hotel_ids, month_start, today)
-    wt_map = _bulk_web_traffic(session, hotel_ids[:1], today - timedelta(days=6), today)
+    occ_val = conn.execute(text(f"""
+        SELECT COALESCE(AVG(oa.occupancy_pct), 65.0)
+        FROM hotel_rms.occupancy_actuals oa
+        JOIN hotel_rms.hotel h ON oa.hotel_id = h.id
+        WHERE oa.date >= :month_start AND oa.date <= :today {region_clause}
+    """), params).scalar()
+    avg_occ = float(occ_val) / 100.0
 
-    total_rev = 0.0
-    prev_rev = 0.0
-    total_occ = 0.0
-    prev_occ = 0.0
-    total_bookings = 0
-    occ_count = 0
-    prev_occ_count = 0
-
-    for h in sample_hotels:
-        for rt in rt_cache.get(h.id, []):
-            current = month_start
-            while current <= today:
-                occ = occ_map.get((h.id, rt.name, current), _DEFAULT_OCC)
-                price = price_map.get((h.id, rt.name, current), rt.base_price)
-                total_rev += price * rt.room_count * occ
-                total_occ += occ
-                occ_count += 1
-                total_bookings += int(rt.room_count * occ)
-                current += timedelta(days=1)
-
-            prev_cur = prev_period_start
-            while prev_cur <= prev_period_end:
-                occ = occ_map.get((h.id, rt.name, prev_cur), _DEFAULT_OCC)
-                prev_rev += rt.base_price * rt.room_count * occ
-                prev_occ += occ
-                prev_occ_count += 1
-                prev_cur += timedelta(days=1)
-
-    total_rev *= scale
-    prev_rev *= scale
-    total_bookings = int(total_bookings * scale)
-
-    avg_occ = total_occ / max(1, occ_count)
-    prev_avg_occ = prev_occ / max(1, prev_occ_count)
+    prev_row = conn.execute(text(f"""
+        SELECT
+            COALESCE(SUM(rt.base_price * rt.room_count * oa.occupancy_pct / 100.0), 0),
+            COALESCE(AVG(oa.occupancy_pct), 65.0)
+        FROM hotel_rms.occupancy_actuals oa
+        JOIN hotel_rms.room_type rt
+            ON oa.hotel_id = rt.hotel_id AND oa.room_type = rt.name
+        JOIN hotel_rms.hotel h ON oa.hotel_id = h.id
+        WHERE oa.date >= :prev_start AND oa.date <= :prev_end {region_clause}
+    """), params).one()
+    prev_rev = float(prev_row[0])
+    prev_avg_occ = float(prev_row[1]) / 100.0
 
     adr_val = session.exec(
         select(func.avg(RoomPrice.price)).where(RoomPrice.date == today)
@@ -1201,14 +1197,11 @@ def get_dashboard_kpis(session: Dependencies.Session, region: str = ""):
     adr = float(adr_val) if adr_val else 0.0
     revpar = adr * avg_occ
 
-    first_hotel = sample_hotels[0] if sample_hotels else None
-    avg_conv = 0.0
-    if first_hotel:
-        conv_total = 0.0
-        for d in range(7):
-            wt = wt_map.get((first_hotel.id, today - timedelta(days=d)), {})
-            conv_total += wt.get("conversion_rate", 0.0)
-        avg_conv = conv_total / 7
+    avg_conv = float(conn.execute(text("""
+        SELECT COALESCE(AVG(conversion_rate), 0)
+        FROM hotel_rms.web_traffic
+        WHERE date >= :wt_start AND date <= :wt_end
+    """), {"wt_start": today - timedelta(days=6), "wt_end": today}).scalar() or 0)
 
     rev_change = round((total_rev - prev_rev) / max(1, prev_rev) * 100, 1) if prev_rev else 0.0
     occ_change = round((avg_occ - prev_avg_occ) / max(0.01, prev_avg_occ) * 100, 1) if prev_avg_occ else 0.0
@@ -1230,41 +1223,40 @@ def get_revenue_trend(session: Dependencies.Session, days: int = 30, region: str
     today = date.today()
     start = today - timedelta(days=days - 1)
 
-    hotel_stmt = select(Hotel).order_by(Hotel.id)
+    conn = session.connection()
+    region_clause = "AND h.region = :region" if region else ""
+    params: dict = {"start": start, "today": today}
     if region:
-        hotel_stmt = hotel_stmt.where(Hotel.region == region)
-    hotel_stmt = hotel_stmt.limit(50)
-    sample = session.exec(hotel_stmt).all()
+        params["region"] = region
 
-    count_stmt = select(func.count()).select_from(Hotel)
-    if region:
-        count_stmt = count_stmt.where(Hotel.region == region)
-    total_hotels: int = session.exec(count_stmt).one()
-    scale = float(total_hotels) / max(1, len(sample))
+    rows = conn.execute(text(f"""
+        SELECT
+            rp.date,
+            COALESCE(SUM(rp.price * rt.room_count
+                * COALESCE(oa.occupancy_pct, 65.0) / 100.0), 0),
+            COALESCE(SUM(FLOOR(rt.room_count
+                * COALESCE(oa.occupancy_pct, 65.0) / 100.0)), 0)
+        FROM rms_app.room_price rp
+        JOIN hotel_rms.room_type rt
+            ON rp.hotel_id = rt.hotel_id AND rp.room_type_name = rt.name
+        JOIN hotel_rms.hotel h ON rp.hotel_id = h.id
+        LEFT JOIN hotel_rms.occupancy_actuals oa
+            ON rp.hotel_id = oa.hotel_id
+            AND rp.room_type_name = oa.room_type
+            AND rp.date = oa.date
+        WHERE rp.date >= :start AND rp.date <= :today {region_clause}
+        GROUP BY rp.date
+        ORDER BY rp.date
+    """), params).all()
 
-    hotel_ids = [h.id for h in sample]
-    rt_cache = _bulk_room_types(session, hotel_ids)
-    occ_map = _bulk_occupancy(session, hotel_ids, start, today)
-    price_map = _bulk_prices(session, hotel_ids, start, today)
-
-    points: list[RevenueTrendPoint] = []
-    for d in range(days - 1, -1, -1):
-        target = today - timedelta(days=d)
-        day_rev = 0.0
-        day_rooms = 0
-        for h in sample:
-            for rt in rt_cache.get(h.id, []):
-                occ = occ_map.get((h.id, rt.name, target), _DEFAULT_OCC)
-                price = price_map.get((h.id, rt.name, target), rt.base_price)
-                day_rev += price * rt.room_count * occ
-                day_rooms += int(rt.room_count * occ)
-
-        points.append(RevenueTrendPoint(
-            date=target.isoformat(),
-            revenue=round(day_rev * scale, 0),
-            rooms_sold=int(day_rooms * scale),
-        ))
-    return points
+    return [
+        RevenueTrendPoint(
+            date=row[0].isoformat(),
+            revenue=round(float(row[1]), 0),
+            rooms_sold=int(row[2]),
+        )
+        for row in rows
+    ]
 
 
 @router.get(
@@ -1274,32 +1266,37 @@ def get_revenue_trend(session: Dependencies.Session, days: int = 30, region: str
 )
 def get_occupancy_by_region(session: Dependencies.Session):
     today = date.today()
-    hotels = session.exec(select(Hotel)).all()
+    conn = session.connection()
 
-    hotel_ids = [h.id for h in hotels]
-    occ_map = _bulk_occupancy(session, hotel_ids, today, today)
-
-    region_occ: dict[str, float] = defaultdict(float)
-    region_count: dict[str, int] = defaultdict(int)
-    region_hotels: dict[str, int] = defaultdict(int)
-    region_rooms: dict[str, int] = defaultdict(int)
-
-    for h in hotels:
-        r = h.region
-        region_hotels[r] += 1
-        region_rooms[r] += h.total_rooms
-        occ = occ_map.get((h.id, "Standard", today), _DEFAULT_OCC)
-        region_occ[r] += occ
-        region_count[r] += 1
+    rows = conn.execute(text("""
+        WITH region_stats AS (
+            SELECT region, COUNT(*) as hotel_count, SUM(total_rooms) as total_rooms
+            FROM hotel_rms.hotel
+            GROUP BY region
+        ),
+        region_occ AS (
+            SELECT h.region, AVG(oa.occupancy_pct) as avg_occ
+            FROM hotel_rms.hotel h
+            JOIN hotel_rms.occupancy_actuals oa
+                ON h.id = oa.hotel_id
+                AND oa.date = :today
+                AND oa.room_type = 'Standard'
+            GROUP BY h.region
+        )
+        SELECT rs.region, COALESCE(ro.avg_occ, 65.0), rs.hotel_count, rs.total_rooms
+        FROM region_stats rs
+        LEFT JOIN region_occ ro ON rs.region = ro.region
+        ORDER BY rs.region
+    """), {"today": today}).all()
 
     return [
         OccupancyByRegion(
-            region=region,
-            avg_occupancy=round(region_occ[region] / max(1, region_count[region]) * 100, 1),
-            hotel_count=region_hotels[region],
-            total_rooms=region_rooms[region],
+            region=row[0],
+            avg_occupancy=round(float(row[1]), 1),
+            hotel_count=int(row[2]),
+            total_rooms=int(row[3]),
         )
-        for region in sorted(region_hotels.keys())
+        for row in rows
     ]
 
 
@@ -1319,6 +1316,7 @@ def get_opportunities(
     hotel_stmt = select(Hotel).order_by(Hotel.id)
     if region:
         hotel_stmt = hotel_stmt.where(Hotel.region == region)
+    hotel_stmt = hotel_stmt.limit(200)
     hotels = session.exec(hotel_stmt).all()
 
     hotel_ids = [h.id for h in hotels]

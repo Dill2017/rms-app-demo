@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "resources": [
+    {
+      "type": "schema",
+      "name": "dilshad_shawki.hotel_rms",
+      "id": "dilshad_shawki.hotel_rms",
+      "created_at": "2026-03-03T14:06:25.114891+00:00",
+      "updated_at": "2026-03-03T14:06:25.114891+00:00"
+    },
+    {
+      "type": "pipeline",
+      "name": "RMS Forecasting Pipeline",
+      "id": "62c5e2ad-eea0-457c-bb88-9ea015cbc3dd",
+      "created_at": "2026-03-03T14:12:13.217285+00:00",
+      "updated_at": "2026-03-03T14:12:13.217285+00:00"
+    },
+    {
+      "type": "job",
+      "name": "RMS Forecasting Daily Refresh",
+      "id": "888868739670596",
+      "created_at": "2026-03-03T14:22:34.354784+00:00",
+      "updated_at": "2026-03-03T14:22:34.354784+00:00"
+    },
+    {
+      "type": "genie_space",
+      "name": "Hotel RMS Data Explorer",
+      "id": "01f117d27ed511c6bb1da1b875b6d116",
+      "created_at": "2026-03-04T14:00:27.130908+00:00",
+      "updated_at": "2026-03-04T14:00:27.130908+00:00"
+    }
+  ]
+}

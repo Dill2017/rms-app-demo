@@ -7,8 +7,13 @@ import { routeTree } from "@/types/routeTree.gen";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-// Create a new query client instance
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 60_000,
+    },
+  },
+});
 
 const router = createRouter({
   routeTree,
