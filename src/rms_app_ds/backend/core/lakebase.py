@@ -184,7 +184,8 @@ def initialize_models(engine: Engine) -> None:
         session.commit()
     logger.info(f"Schema '{APP_SCHEMA}' ensured")
 
-    if dev_port:
+    synced_ok = _synced_tables_available(engine)
+    if dev_port or not synced_ok:
         with Session(engine) as session:
             session.connection().execute(
                 text(f"CREATE SCHEMA IF NOT EXISTS {SYNCED_SCHEMA}")

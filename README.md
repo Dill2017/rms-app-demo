@@ -11,10 +11,8 @@ A full-stack Hotel Revenue Management System built on [Databricks](https://datab
 - [Deployed Resources](#deployed-resources)
 - [Project Structure](#project-structure)
 - [Prerequisites](#prerequisites)
-- [Getting Started](#getting-started)
-  - [Local Development](#local-development)
-  - [Deploy to Databricks](#deploy-to-databricks)
-- [Configuration](#configuration)
+- [Deploy to Databricks](#deploy-to-databricks)
+- [Local Development](#local-development)
 - [Tech Stack](#tech-stack)
 
 ---
@@ -188,160 +186,112 @@ rms_app_demo/
 
 ## Prerequisites
 
-Before deploying this project, ensure you have:
-
-### Tools
-
-- **[Databricks CLI](https://docs.databricks.com/en/dev-tools/cli/index.html)** v0.230+ — configured with a workspace profile
-- **Python 3.11+** with **[uv](https://docs.astral.sh/uv/)** package manager
-- **[Bun](https://bun.sh/)** v1.0+ — for frontend dependency management
-- **[apx CLI](https://github.com/databricks-solutions/apx)** — for local development (`uv tool install apx`)
-
-### Databricks Workspace
-
-- **Unity Catalog** enabled on your workspace
-- **A UC catalog** for generated data (default: `rms_hotel_demo`). Create it if it doesn't exist:
-  ```sql
-  CREATE CATALOG IF NOT EXISTS rms_hotel_demo;
-  CREATE SCHEMA IF NOT EXISTS rms_hotel_demo.hotel_rms;
-  ```
-- **A UC catalog for Lakebase** (default: `rms_app_ds_lakebase`) — this is automatically created when the Lakebase instance is provisioned
-- **Lakebase (managed PostgreSQL)** enabled on your workspace — the bundle provisions a `CU_1` instance
-- **Genie Spaces** access — you need to create a Genie Space over the `hotel_rms` tables and update the `GENIE_SPACE_ID` in `src/rms_app_ds/backend/genie_router.py`
-- **Serverless compute** or a cluster with access to Unity Catalog for running the data generation and sync jobs
-- **Databricks CLI profile** configured for your workspace:
-  ```bash
-  databricks configure --profile <your-profile>
-  ```
-
-### Permissions
-
-- `CAN_MANAGE` on the target UC catalog/schema (to create tables)
-- `CAN_MANAGE` on the Lakebase instance (provisioned by the bundle)
-- Permission to create and run Databricks Jobs
-- Permission to deploy Databricks Apps
+- **[Databricks CLI](https://docs.databricks.com/en/dev-tools/cli/index.html)** v0.230+ configured with a workspace profile
+- **Python 3.11+** with **[uv](https://docs.astral.sh/uv/)**
+- **[Bun](https://bun.sh/)** v1.0+
+- **Databricks workspace** with Unity Catalog and Lakebase enabled
+- Permissions to create UC catalogs/schemas, deploy Apps, and run Jobs
 
 ---
 
-## Getting Started
+## Deploy to Databricks
 
-### Local Development
+### 1. Clone and install
 
-Local development uses apx dev servers that run the FastAPI backend, React frontend, and OpenAPI client watcher concurrently. In dev mode, the app seeds a local PostgreSQL database with synthetic data (no Databricks connection needed for the core experience).
+```bash
+git clone https://github.com/Dill2017/rms-app-demo.git
+cd rms-app-demo
+uv sync
+bun install
+```
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/Dill2017/rms-app-demo.git
-   cd rms-app-demo
-   ```
+### 2. Configure your Databricks CLI profile
 
-2. **Install dependencies:**
-   ```bash
-   uv sync                    # Python dependencies
-   bun install                # Frontend dependencies
-   ```
+The bundle uses your default Databricks CLI profile. Configure one if you haven't:
 
-3. **Start development servers:**
-   ```bash
-   uv run apx dev start
-   ```
-   This starts the FastAPI backend, Vite dev server, and OpenAPI client watcher. The app will be available at the URL printed in the terminal (typically `http://localhost:8001`).
+```bash
+databricks configure --profile DEFAULT
+```
 
-   > **Note:** In dev mode, the app automatically detects that synced tables are unavailable and falls back to generating all data locally in the dev PostgreSQL database. The Genie explorer page requires a Databricks workspace connection and will not be functional in fully local mode.
+Or set environment variables instead: `DATABRICKS_HOST` and `DATABRICKS_TOKEN`.
 
-4. **View logs and check status:**
-   ```bash
-   uv run apx dev logs        # View all logs
-   uv run apx dev logs -f     # Stream logs in real-time
-   uv run apx dev status      # Check server status
-   ```
+### 3. Customize variables (optional)
 
-5. **Run type checking:**
-   ```bash
-   uv run apx dev check       # TypeScript + Python type checks
-   ```
-
-6. **Stop servers:**
-   ```bash
-   uv run apx dev stop
-   ```
-
-### Deploy to Databricks
-
-Deploy the full application with all resources (app, jobs, Lakebase database) to your Databricks workspace.
-
-1. **Update bundle variables** in `databricks.yml` if you want to use different catalog/schema names:
-   ```yaml
-   variables:
-     lakebase_instance_name:
-       default: "rms-app-ds"           # Lakebase instance name
-     forecast_catalog:
-       default: "rms_hotel_demo"       # UC catalog for generated data
-     forecast_schema:
-       default: "hotel_rms"            # UC schema for generated data
-     lakebase_catalog:
-       default: "rms_app_ds_lakebase"  # UC catalog mapped to Lakebase
-   ```
-
-2. **Update the workspace profile** in `databricks.yml` under the target you want to deploy to:
-   ```yaml
-   targets:
-     prod:
-       workspace:
-         profile: <your-databricks-cli-profile>
-   ```
-
-3. **Create the Genie Space** in your Databricks workspace:
-   - Go to the Genie section in your workspace
-   - Create a new Genie Space over the `hotel_rms` tables in your UC catalog
-   - Copy the Genie Space ID and update `GENIE_SPACE_ID` in `src/rms_app_ds/backend/genie_router.py`
-
-4. **Deploy the bundle:**
-   ```bash
-   databricks bundle deploy -t prod
-   ```
-   This provisions the Lakebase instance, deploys the app, and creates all three jobs.
-
-5. **Run the data generation job** (first time):
-   ```bash
-   databricks bundle run rms_data_generation_job -t prod
-   ```
-   This creates the 8 Delta tables in Unity Catalog with synthetic data.
-
-6. **Run the synced tables setup job** (first time):
-   ```bash
-   databricks bundle run rms_synced_tables_setup_job -t prod
-   ```
-   This creates triggered synced tables that replicate UC data into Lakebase.
-
-7. **Unpause the recurring jobs** (optional):
-   - **RMS Data Generation** — regenerates data daily at 05:00 UTC
-   - **RMS App State Sync** — syncs pricing decisions from Lakebase to UC every 15 minutes
-
-   You can unpause these from the Databricks Jobs UI or via CLI.
-
-8. **Access the app** — navigate to the app URL shown in the Databricks Apps UI.
-
----
-
-## Configuration
-
-### Bundle Variables
+Edit `databricks.yml` to change any defaults:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `lakebase_instance_name` | `rms-app-ds` | Name of the Lakebase PostgreSQL instance |
-| `forecast_catalog` | `rms_hotel_demo` | Unity Catalog catalog for generated data |
+| `forecast_catalog` | `rms_hotel_demo` | UC catalog for generated data |
 | `forecast_schema` | `hotel_rms` | UC schema for generated data |
-| `lakebase_catalog` | `rms_app_ds_lakebase` | UC catalog mapped to the Lakebase instance |
+| `lakebase_instance_name` | `rms-app-ds` | Lakebase PostgreSQL instance name |
+| `lakebase_catalog` | `rms_app_ds_lakebase` | UC catalog mapped to Lakebase |
+| `node_type_id` | `Standard_D4ds_v5` | Cluster node type (Azure default; use `i3.xlarge` for AWS, `n2-standard-4` for GCP) |
 
-### Environment Variables
+### 4. Deploy the bundle
 
-| Variable | Description |
-|----------|-------------|
-| `PGAPPNAME` | PostgreSQL application name (set in `.env`) |
-| `APX_DEV_DB_PORT` | Dev-mode PostgreSQL port (set automatically by apx) |
-| `APX_DEV_DB_PWD` | Dev-mode PostgreSQL password (set automatically by apx) |
+```bash
+databricks bundle deploy -t prod
+```
+
+This provisions the Lakebase instance, deploys the app, and creates all three jobs.
+
+### 5. Run the initial setup jobs
+
+```bash
+# Generate synthetic data in Unity Catalog (first time)
+databricks bundle run rms_data_generation_job -t prod
+
+# Create synced tables from UC into Lakebase (first time)
+databricks bundle run rms_synced_tables_setup_job -t prod
+```
+
+### 6. Start the app
+
+```bash
+databricks bundle run rms-app-ds-app -t prod
+```
+
+Navigate to the app URL shown in the Databricks Apps UI.
+
+### 7. Enable the Genie Explorer (optional)
+
+The Explore page uses a Databricks Genie Space for natural language data queries. Since Genie Spaces can't be provisioned via DABs, set it up manually:
+
+1. In your workspace, go to **Genie** and create a new space over the `hotel_rms` tables in your UC catalog
+2. Copy the Genie Space ID from the URL (the hex string after `/genie/rooms/`)
+3. In the Databricks Apps UI, add an environment variable to the `rms-app-ds` app:
+   - **Name:** `RMS_APP_DS_GENIE_SPACE_ID`
+   - **Value:** your Genie Space ID
+
+The app will pick it up on the next restart. Without this, the Explore page returns a helpful error message instead of failing silently.
+
+### 8. Unpause recurring jobs (optional)
+
+Both recurring jobs are deployed **paused** by default:
+
+- **RMS Data Generation** — regenerates data daily at 05:00 UTC
+- **RMS App State Sync** — syncs pricing decisions from Lakebase back to UC every 15 minutes
+
+Unpause them from the Databricks Jobs UI when ready.
+
+---
+
+## Local Development
+
+Local dev uses [apx](https://github.com/databricks-solutions/apx) to run the FastAPI backend, React frontend, and OpenAPI watcher concurrently. In dev mode the app seeds a local PostgreSQL with synthetic data — no Databricks connection needed.
+
+```bash
+uv tool install apx          # Install apx CLI (once)
+uv run apx dev start          # Start all dev servers
+```
+
+The app will be available at the URL printed in the terminal (typically `http://localhost:8001`). The Genie explorer requires a workspace connection and won't work in fully local mode.
+
+```bash
+uv run apx dev logs -f        # Stream logs
+uv run apx dev check          # Run type checks
+uv run apx dev stop           # Stop servers
+```
 
 ---
 

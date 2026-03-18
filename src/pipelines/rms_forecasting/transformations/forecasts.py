@@ -1,7 +1,7 @@
 """
 RMS Forecasting Pipeline — synthetic demand and occupancy forecasts.
 
-Generates two materialized views in dilshad_shawki.hotel_rms:
+Generates two materialized views in the configured UC catalog/schema:
   - demand_forecast:    per-hotel, 30-day demand scores with expected traffic
   - occupancy_forecast: per-hotel per-room-type, 30-day occupancy predictions
 

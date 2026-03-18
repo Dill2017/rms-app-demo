@@ -32,6 +32,7 @@ node_modules/
 
 # DABs 
 .databricks
+.databricks-resources.json
 
 # apx
 .apx/

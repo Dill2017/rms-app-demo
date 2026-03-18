@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any
 
@@ -13,19 +14,22 @@ from .models import GenieAskIn, GenieAskOut, GenieQueryResult
 router = create_router()
 logger = logging.getLogger(__name__)
 
-GENIE_SPACE_ID = "01f1187b51271f3c809cd77fbc42e1a8"
-_GENIE_PATH = f"/api/2.0/genie/spaces/{GENIE_SPACE_ID}"
+GENIE_SPACE_ID = os.getenv("RMS_APP_DS_GENIE_SPACE_ID", "")
 _POLL_INTERVAL = 3
 _MAX_POLLS = 40
 _TERMINAL_STATUSES = {"COMPLETED", "FAILED", "CANCELLED"}
 
 
+def _genie_path() -> str:
+    return f"/api/2.0/genie/spaces/{GENIE_SPACE_ID}"
+
+
 def _do_post(ws: WorkspaceClient, path: str, body: dict[str, Any]) -> dict[str, Any]:
-    return ws.api_client.do("POST", f"{_GENIE_PATH}{path}", body=body)
+    return ws.api_client.do("POST", f"{_genie_path()}{path}", body=body)
 
 
 def _do_get(ws: WorkspaceClient, path: str) -> dict[str, Any]:
-    return ws.api_client.do("GET", f"{_GENIE_PATH}{path}")
+    return ws.api_client.do("GET", f"{_genie_path()}{path}")
 
 
 def _poll_message(ws: WorkspaceClient, conversation_id: str, message_id: str) -> dict[str, Any]:
@@ -110,6 +114,11 @@ def ask_genie(
     ws: Dependencies.Client,
 ):
     """Ask a natural language question to the Genie Space."""
+    if not GENIE_SPACE_ID:
+        raise HTTPException(
+            status_code=501,
+            detail="Genie Space not configured. Set the RMS_APP_DS_GENIE_SPACE_ID environment variable.",
+        )
     try:
         if body.conversation_id:
             initial = _do_post(
